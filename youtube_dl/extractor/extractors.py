@@ -1090,6 +1090,7 @@ from .simplecast import (
 )
 from .sina import SinaIE
 from .sixplay import SixPlayIE
+from .skillshare import SkillShareCourseIE
 from .skyit import (
     SkyItPlayerIE,
     SkyItVideoIE,
