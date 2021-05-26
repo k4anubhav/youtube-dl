@@ -1,6 +1,6 @@
 from __future__ import unicode_literals
 from .common import InfoExtractor
-from ..utils import dict_get, int_or_none, ExtractorError
+from ..utils import dict_get, int_or_none, ExtractorError, url_or_none, str_or_none
 
 
 class SkillShareCourseIE(InfoExtractor):
@@ -65,9 +65,8 @@ class SkillShareCourseIE(InfoExtractor):
         if login_data.get('logged-in'):
             class_data = self._download_json(
                 '%s/classes/%s' % (self._API_BASE, playlist_id),
-                playlist_id,
-                headers=self.headers
-            )
+                playlist_id, headers=self.headers,
+                note='Checking Login Status')
 
             if class_data.get('enrollment_type') == 0 or login_data.get('premium'):
                 class_title, teacher_name, videos_data = self.black_black(class_data=class_data)
@@ -80,22 +79,21 @@ class SkillShareCourseIE(InfoExtractor):
         else:
             raise ExtractorError(
                 'This video is only available for registered users. You may want to use --cookies.', expected=True)
-        print(playlist_id)
-        # TODO more code goes here, for example ...
+        # print(playlist_id)
 
         return self.playlist_result(entries=videos_data, playlist_id=playlist_id, playlist_title=class_title)
 
     def get_video_data(self, video_hashed_id):
         meta_url = 'https://edge.api.brightcove.com/playback/v1/accounts/{account_id}/videos/{video_hashed_id}'.format(
             account_id=self.brightcove_account_id,
-            video_hashed_id=video_hashed_id,
-        )
-        video_data = self._download_json(
+            video_hashed_id=video_hashed_id)
+
+        meta_data = self._download_json(
             meta_url,
-            video_hashed_id,
-            headers=self.brightcove_headers
-        )
-        return video_data
+            video_id=video_hashed_id,
+            note='Downloading Video Meta data',
+            headers=self.brightcove_headers)
+        return meta_data
 
     def check_logged_in(self):
         res_data = {
@@ -105,13 +103,11 @@ class SkillShareCourseIE(InfoExtractor):
             "Full Name": None
         }
 
-        res = self._download_json(
-            url_or_request='%s/me' % self._API_BASE,
-            video_id=None,
+        data = self._download_json(
+            url_or_request='%s/me' % self._API_BASE, video_id=None,
             headers=self.login_headers,
+            note='Download user Info',
             expected_status=(200, 401,))
-
-        data = res
 
         if data.get('errors'):
             if data.get('errors')[0].get('code') == 135:
@@ -123,7 +119,7 @@ class SkillShareCourseIE(InfoExtractor):
                 "logged-in": True,
                 "premium": data.get('is_member'),
                 "Username": data.get('username'),
-                "Full Name": data.get('full_name')})
+                "User Full Name": data.get('full_name')})
             return res_data
 
     @staticmethod
@@ -140,11 +136,17 @@ class SkillShareCourseIE(InfoExtractor):
         teacher_name = dict_get(self.safe_get(class_data, '_embedded', 'teacher'), ['vanity_username', 'full_name'])
 
         class_title = class_data.get('title')
+        webpage_url = url_or_none(class_data.get('web_url'))
+        categories = [str_or_none(class_data.get('category'))]
+        if categories == [None]:
+            categories = None
 
         videos_data = []
 
         for units in self.safe_get(class_data, '_embedded', 'units', '_embedded', 'units'):
             for sessions in self.safe_get(units, '_embedded', 'sessions', '_embedded', 'sessions'):
+                index = int_or_none(sessions.get('index'))
+                title = str_or_none(sessions.get('title'))
                 if 'video_hashed_id' in sessions:
                     if sessions.get('video_hashed_id'):
                         video_hashed_id = sessions.get('video_hashed_id').split(':')[1]
@@ -154,11 +156,14 @@ class SkillShareCourseIE(InfoExtractor):
 
                         videos_data.append({
                             'video_hashed_id': video_hashed_id,
-                            'title': sessions.get('title'),
+                            'title': title,
                             'video_duration': int_or_none(sessions.get('video_duration_seconds')),
-                            'thumbnail': sessions.get('video_thumbnail_url'),
-                            'index': sessions.get('index')})
-
+                            'thumbnail': url_or_none(sessions.get('video_thumbnail_url')),
+                            'webpage_url': webpage_url,
+                            'categories': categories,
+                            'index': index})
+                    else:
+                        self.report_warning("You Don't have access to this video", video_id="{title}-{index}".format(title=title, index=index))
         return class_title, teacher_name, videos_data
 
     def get_format(self, src_link, video_id, f_type):
@@ -191,14 +196,8 @@ class SkillShareCourseIE(InfoExtractor):
             'duration': None,
             'formats': None,
         }
-        meta_url = 'https://edge.api.brightcove.com/playback/v1/accounts/{account_id}/videos/{video_hashed_id}'.format(
-            account_id=self.brightcove_account_id,
-            video_hashed_id=video_hashed_id)
 
-        meta_data = self._download_json(
-            meta_url,
-            video_id=video_hashed_id,
-            headers=self.brightcove_headers)
+        meta_data = self.get_video_data(video_hashed_id)
 
         video_id = meta_data.get('id')
 
@@ -223,8 +222,7 @@ class SkillShareCourseIE(InfoExtractor):
                 elif sources.get('type') == 'application/dash+xml' and 'src' in sources:
                     formats = (self.get_format(
                         sources.get('src'),
-                        video_id,
-                        'mpd'))
+                        video_id, 'mpd'))
 
             res_template.update({
                 'id': video_id,
@@ -240,13 +238,10 @@ class SkillShareCourseIE(InfoExtractor):
                 url = sources.get('src')
                 if url:
                     break
-            subtitles.setdefault(lang, []).append({
-                'url': url,
-            })
+            subtitles.setdefault(lang, []).append({'url': url})
 
         if subtitles != {}:
             print(subtitles, 'subs')
-            res_template.update({
-                'subtitles': subtitles})
+            res_template.update({'subtitles': subtitles})
 
         return res_template
